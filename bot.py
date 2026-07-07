@@ -5,6 +5,9 @@ import discord
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from groq import AsyncGroq
+from psycopg_pool import AsyncConnectionPool
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from intent_engine import compile_intent_engine
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -12,6 +15,11 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+DB_URI = os.getenv("SUPABASE_DB_URI")
+
+# Global variables for the pool and graph app
+db_pool = None
+app = None
 
 # 2. Initialize Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -31,9 +39,35 @@ intents = discord.Intents.default()
 intents.message_content = True  
 client = discord.Client(intents=intents)
 
+async def setup_db_pool():
+    # Define the pool without opening it immediately
+    pool = AsyncConnectionPool(
+        conninfo=DB_URI,
+        max_size=10, 
+        open=False,
+        kwargs={"autocommit": True}
+    )
+    
+    # Explicitly open the pool
+    await pool.open()
+    return pool
+
 @client.event
 async def on_ready():
+    global db_pool, app
     print(f'Gateway active. Logged in as {client.user}')
+
+     # 1. Initialize the pool using the new pattern
+    db_pool = await setup_db_pool()
+    
+    # 2. Pass the open pool to the checkpointer
+    checkpointer = AsyncPostgresSaver(db_pool)
+    
+    # 3. Setup and Compile
+    await checkpointer.setup()
+    app = compile_intent_engine(checkpointer)
+    
+    print("🧠 LangGraph state machine compiled with production-ready connection pooling.")
 
 @client.event
 async def on_message(message):
@@ -183,11 +217,127 @@ async def process_receipt_vision(tab_id: str, image_url: str, channel_id: str):
             item_count = len(receipt_data.get("items", []))
             formatted_total = f"${receipt_data.get('total', 0):.2f}"
             await channel.send(f"✅ Extracted **{item_count} items** for a total of **{formatted_total}**! (Tab ID: `{tab_id}`)\n*Next up: Resolving split parameters...*")
+        
+        # 2. Trigger the engine (Pass NULL for state validation variables)
+        # Let the engine query the DB and decide if it's valid
+        global app
+
+        if app is None:
+            print("❌ Error: Graph 'app' is not initialized yet. Waiting for bot to be ready...")
+            # Optional: You could implement a small retry or queueing logic here
+            return 
+    
+        if app:
+            config = {"configurable": {"thread_id": tab_id}}
+            initial_state = {
+                "tab_id": tab_id, 
+                "channel_id": str(channel_id), 
+                "split_type": "null",
+                "is_receipt_valid": True,    # We don't pre-calculate this anymore
+                "validation_issue": ""
+            }
+            await app.ainvoke(initial_state, config)
 
     except Exception as e:
         print(f"[{tab_id}] Error in Vision Node: {e}")
         if channel:
             await channel.send(f"❌ Failed to parse the receipt. Please try taking a clearer photo. Error: `{str(e)}`")
+
+class SplitTypeView(discord.ui.View):
+    def __init__(self, tab_id: str):
+        # timeout=None ensures the buttons don't expire/break while waiting for a click
+        super().__init__(timeout=None) 
+        self.tab_id = tab_id
+
+    @discord.ui.button(label="Split Evenly", style=discord.ButtonStyle.primary, custom_id="btn_even")
+    async def even_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_selection(interaction, "even")
+
+    @discord.ui.button(label="Itemize Split", style=discord.ButtonStyle.secondary, custom_id="btn_itemize")
+    async def itemize_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_selection(interaction, "itemized")
+
+    async def handle_selection(self, interaction: discord.Interaction, split_type: str):
+        # 1. Acknowledge the click immediately to update the Discord UI
+        await interaction.response.edit_message(
+            content=f"✅ **{split_type.capitalize()}** split selected! Processing...", 
+            view=None # Setting view=None removes the buttons so they can't be clicked twice
+        )
+        
+        # 2. Update your main database row
+        supabase.table("tabs").update({
+            "split_type": split_type,
+            "status": "active"
+        }).eq("id", self.tab_id).execute()
+
+        # 3. Un-freeze the LangGraph State Machine
+        global app 
+        
+        if app:
+            config = {"configurable": {"thread_id": self.tab_id}}
+            
+            # Because we are using an async Postgres checkpointer, we MUST use aupdate_state
+            await app.aupdate_state(config, {"split_type": split_type})
+            
+            # Invoke with 'None' to tell LangGraph to resume from the exact breakpoint
+            print(f"[{self.tab_id}] Un-freezing graph state...")
+            await app.ainvoke(None, config)
+        else:
+            print(f"❌ Error: Graph engine not found when resolving {self.tab_id}")
+
+class ReceiptFixView(discord.ui.View):
+    def __init__(self, tab_id: str):
+        # timeout=None ensures the view persists across bot restarts
+        super().__init__(timeout=None)
+        self.tab_id = tab_id
+
+    @discord.ui.button(label="Approve Anyway", style=discord.ButtonStyle.success, custom_id="btn_approve_math")
+    async def approve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Overrides the math warning and continues the graph execution."""
+        
+        # 1. Update the Discord message so the user knows it worked
+        await interaction.response.edit_message(
+            content="✅ **Math warning overridden.** Proceeding with the extracted totals...",
+            view=None
+        )
+
+        # 2. Un-freeze the LangGraph State Machine
+        global app 
+        
+        if app:
+            config = {"configurable": {"thread_id": self.tab_id}}
+            
+            # We force 'is_receipt_valid' to True so the graph knows the issue was handled
+            await app.aupdate_state(config, {"is_receipt_valid": True})
+            
+            print(f"[{self.tab_id}] Math override applied. Resuming from 'apply_fix' breakpoint...")
+            
+            # Invoke with None to resume execution down to the evaluate node
+            await app.ainvoke(None, config)
+        else:
+            print(f"❌ Error: Graph engine not found when attempting to fix {self.tab_id}")
+
+    @discord.ui.button(label="Cancel Tab", style=discord.ButtonStyle.danger, custom_id="btn_cancel_tab")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Aborts the process if the vision model completely botched the extraction."""
+        
+        # 1. Acknowledge and remove buttons
+        await interaction.response.edit_message(
+            content="🚫 **Tab cancelled.** Please try taking a clearer photo of the receipt and upload again.",
+            view=None
+        )
+        
+        # 2. Mark the tab as cancelled in Supabase so it doesn't show up in active queries
+        try:
+            # We wrap this in a to_thread if you are using the sync Supabase client, 
+            # or just call it directly if you are managing it synchronously here
+            supabase.table("tabs").update({"status": "cancelled"}).eq("id", self.tab_id).execute()
+            print(f"[{self.tab_id}] Tab cancelled by user.")
+        except Exception as e:
+            print(f"[{self.tab_id}] Failed to cancel tab in database: {e}")
+            
+        # Note: We do not call ainvoke() here. The graph remains safely frozen at 
+        # the 'apply_fix' breakpoint forever, which effectively kills the workflow.
 
 # Run the Discord gateway
 if __name__ == "__main__":
