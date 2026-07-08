@@ -58,14 +58,17 @@ async def ask_receipt_fix_discord(state: TabState):
     """Dispatches a Discord UI asking the user to manually verify/fix the receipt."""
     print(f"[{state['tab_id']}] Graph: Receipt invalid. Asking user for fix...")
     
-    from bot import client, ReceiptFixView 
-    
-    channel = client.get_channel(int(state["channel_id"]))
+    import shared
+    from bot import ReceiptFixView
+
+    channel = shared.active_channels.get(state["tab_id"])
     if channel:
         view = ReceiptFixView(tab_id=state["tab_id"])
         issue_text = state.get('validation_issue', 'Please manually verify the total.')
         await channel.send(f"⚠️ **Wait, the math isn't mathing on this receipt.**\n`{issue_text}`", view=view)
-        
+    else:
+        print(f"❌ Error: No active channel found for tab {state['tab_id']}.")
+
     return state
 
 
@@ -100,23 +103,19 @@ async def send_clarification_discord(state: TabState):
     """Dispatches the Discord UI buttons to ask for the split type."""
     print(f"[{state['tab_id']}] Graph: Split missing. Dispatching UI buttons...")
     
-    from bot import client, SplitTypeView 
-    
-    channel = client.get_channel(int(state["channel_id"]))
+    import shared
+    from bot import SplitTypeView
 
-    if not channel:
-        print(f"❌ Error: Bot could not find channel {state['channel_id']}. Check permissions.")
-        return state
-    
-    try:
+    channel = shared.active_channels.get(state["tab_id"])
+    if channel:
         view = SplitTypeView(tab_id=state["tab_id"])
         await channel.send(
-            f"🧾 **Receipt Processed!** How would you like to split this?", 
+            f"🧾 **Receipt Processed!** How would you like to split this?",
             view=view
         )
         print(f"✅ UI buttons successfully dispatched to Discord.")
-    except Exception as e:
-        print(f"❌ Critical error sending UI: {e}")
+    else:
+        print(f"❌ Error: No active channel found for tab {state['tab_id']}.")
     
     return state
 

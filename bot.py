@@ -19,7 +19,8 @@ DB_URI = os.getenv("SUPABASE_DB_URI")
 
 # Global variables for the pool and graph app
 db_pool = None
-app = None
+
+import shared
 
 # 2. Initialize Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -54,18 +55,18 @@ async def setup_db_pool():
 
 @client.event
 async def on_ready():
-    global db_pool, app
+    global db_pool
     print(f'Gateway active. Logged in as {client.user}')
 
      # 1. Initialize the pool using the new pattern
     db_pool = await setup_db_pool()
-    
+
     # 2. Pass the open pool to the checkpointer
     checkpointer = AsyncPostgresSaver(db_pool)
-    
+
     # 3. Setup and Compile
     await checkpointer.setup()
-    app = compile_intent_engine(checkpointer)
+    shared.app = compile_intent_engine(checkpointer)
     
     print("🧠 LangGraph state machine compiled with production-ready connection pooling.")
 
@@ -131,9 +132,10 @@ async def on_message(message):
                 
                 # Acknowledge the upload natively in Discord
                 tab_id = tab_res.data[0]['id']
+                shared.active_channels[tab_id] = message.channel
                 await message.reply(f"🧾 Receipt intercepted and uploaded to the DB! Initiating extraction sequence... (Tab ID: `{tab_id}`)")
-                
-                 # This runs process_receipt_vision asynchronously without blocking the bot
+
+                # This runs process_receipt_vision asynchronously without blocking the bot
                 asyncio.create_task(process_receipt_vision(tab_id, storage_url, channel_id))
 
                 # Break after the first image to prevent duplicate tabs if they upload a batch
@@ -141,8 +143,8 @@ async def on_message(message):
 
 async def process_receipt_vision(tab_id: str, image_url: str, channel_id: str):
     """Background task to extract line items from a receipt image and update the database."""
-    channel = client.get_channel(int(channel_id))
-    
+    channel = shared.active_channels.get(tab_id)
+
     try:
         # 1. The Strict JSON System Prompt
         system_prompt = """
@@ -220,26 +222,26 @@ async def process_receipt_vision(tab_id: str, image_url: str, channel_id: str):
         
         # 2. Trigger the engine (Pass NULL for state validation variables)
         # Let the engine query the DB and decide if it's valid
-        global app
-
-        if app is None:
+        if shared.app is None:
             print("❌ Error: Graph 'app' is not initialized yet. Waiting for bot to be ready...")
-            # Optional: You could implement a small retry or queueing logic here
-            return 
-    
-        if app:
-            config = {"configurable": {"thread_id": tab_id}}
-            initial_state = {
-                "tab_id": tab_id, 
-                "channel_id": str(channel_id), 
-                "split_type": "null",
-                "is_receipt_valid": True,    # We don't pre-calculate this anymore
-                "validation_issue": ""
-            }
-            await app.ainvoke(initial_state, config)
+            return
+
+        config = {"configurable": {"thread_id": tab_id}}
+        initial_state = {
+            "tab_id": tab_id,
+            "channel_id": str(channel_id),
+            "split_type": "null",
+            "is_receipt_valid": True,
+            "validation_issue": ""
+        }
+        await shared.app.ainvoke(initial_state, config)
+        graph_state = await shared.app.aget_state(config)
+        if not graph_state.next:
+            shared.active_channels.pop(tab_id, None)
 
     except Exception as e:
         print(f"[{tab_id}] Error in Vision Node: {e}")
+        shared.active_channels.pop(tab_id, None)
         if channel:
             await channel.send(f"❌ Failed to parse the receipt. Please try taking a clearer photo. Error: `{str(e)}`")
 
@@ -271,17 +273,18 @@ class SplitTypeView(discord.ui.View):
         }).eq("id", self.tab_id).execute()
 
         # 3. Un-freeze the LangGraph State Machine
-        global app 
-        
-        if app:
+        if shared.app:
             config = {"configurable": {"thread_id": self.tab_id}}
-            
+
             # Because we are using an async Postgres checkpointer, we MUST use aupdate_state
-            await app.aupdate_state(config, {"split_type": split_type})
-            
+            await shared.app.aupdate_state(config, {"split_type": split_type})
+
             # Invoke with 'None' to tell LangGraph to resume from the exact breakpoint
             print(f"[{self.tab_id}] Un-freezing graph state...")
-            await app.ainvoke(None, config)
+            await shared.app.ainvoke(None, config)
+            graph_state = await shared.app.aget_state(config)
+            if not graph_state.next:
+                shared.active_channels.pop(self.tab_id, None)
         else:
             print(f"❌ Error: Graph engine not found when resolving {self.tab_id}")
 
@@ -302,18 +305,19 @@ class ReceiptFixView(discord.ui.View):
         )
 
         # 2. Un-freeze the LangGraph State Machine
-        global app 
-        
-        if app:
+        if shared.app:
             config = {"configurable": {"thread_id": self.tab_id}}
-            
+
             # We force 'is_receipt_valid' to True so the graph knows the issue was handled
-            await app.aupdate_state(config, {"is_receipt_valid": True})
-            
+            await shared.app.aupdate_state(config, {"is_receipt_valid": True})
+
             print(f"[{self.tab_id}] Math override applied. Resuming from 'apply_fix' breakpoint...")
-            
+
             # Invoke with None to resume execution down to the evaluate node
-            await app.ainvoke(None, config)
+            await shared.app.ainvoke(None, config)
+            graph_state = await shared.app.aget_state(config)
+            if not graph_state.next:
+                shared.active_channels.pop(self.tab_id, None)
         else:
             print(f"❌ Error: Graph engine not found when attempting to fix {self.tab_id}")
 
