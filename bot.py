@@ -2,6 +2,8 @@ import os
 import json
 import asyncio
 import discord
+import secrets
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from groq import AsyncGroq
@@ -260,6 +262,7 @@ class SplitTypeView(discord.ui.View):
         await self.handle_selection(interaction, "itemized")
 
     async def handle_selection(self, interaction: discord.Interaction, split_type: str):
+        channel = shared.active_channels.get(self.tab_id)
         # 1. Acknowledge the click immediately to update the Discord UI
         await interaction.response.edit_message(
             content=f"✅ **{split_type.capitalize()}** split selected! Processing...", 
@@ -271,6 +274,18 @@ class SplitTypeView(discord.ui.View):
             "split_type": split_type,
             "status": "active"
         }).eq("id", self.tab_id).execute()
+
+        # Generate a cryptographically secure random string
+        token = secrets.token_urlsafe(32) 
+
+        # Save it to Supabase
+        supabase.table("auth_tokens").insert({
+            "token": token,
+            "discord_user_id": str(interaction.user.id),
+            "tab_id": self.tab_id,
+            "expires_at": (datetime.now()+ timedelta(minutes=15)).isoformat(),
+            "is_used": False
+        }).execute()
 
         # 3. Un-freeze the LangGraph State Machine
         if shared.app:
@@ -287,6 +302,11 @@ class SplitTypeView(discord.ui.View):
                 shared.active_channels.pop(self.tab_id, None)
         else:
             print(f"❌ Error: Graph engine not found when resolving {self.tab_id}")
+        
+        if channel:
+            # Send the UI link to Discord for checkout
+            url = f"https://yourapp.com/split/{self.tab_id}?token={token}"
+            await channel.send(f"💳 **Checkout Link:** {url}\n*This link is valid for 15 minutes.*")
 
 class ReceiptFixView(discord.ui.View):
     def __init__(self, tab_id: str):
