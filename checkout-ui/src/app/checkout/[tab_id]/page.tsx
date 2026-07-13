@@ -87,14 +87,16 @@ export default async function CheckoutPage({
 
   const displayName = userData?.username ?? "Friend";
 
-  // For even splits, look up the pre-calculated share from tab_assignments
-  // The bot writes these when the organizer selects people via UserSelectMenu
+  // For even splits, look up the pre-calculated share from tab_assignments.
+  // The bot writes these when the organizer selects people via the UserSelect
+  // dropdown. We key on discord_user_id (from the `user` param) rather than the
+  // display name so shared/duplicate usernames can't mismatch or collide.
   const { data: assignmentData } = await supabase
     .from("tab_assignments")
     .select("share_amount")
     .eq("tab_id", tab_id)
-    .eq("invitee_label", displayName)
-    .single();
+    .eq("discord_user_id", user)
+    .maybeSingle();
 
   // Fallback: if no assignment row exists yet, just use the full total
   // (the bot should always create these, but this is a safety net)
