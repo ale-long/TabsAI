@@ -153,7 +153,7 @@ The app expects these Supabase tables (created by the Discord bot):
 | `tabs` | `id`, `creator_id`, `total_amount` (cents), `split_type`, `status` |
 | `receipt_items` | `id`, `tab_id`, `item_name`, `unit_price` (cents), `quantity` |
 | `users` | `id`, `discord_user_id`, `username` |
-| `tab_assignments` | `id`, `tab_id`, `invitee_label`, `share_amount` (cents), `item_ids` (text[]) |
+| `tab_assignments` | `id`, `tab_id`, `discord_user_id`, `invitee_label`, `share_amount` (cents), `item_ids` (text[]) |
 
 ## Project Structure
 
