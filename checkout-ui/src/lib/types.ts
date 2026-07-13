@@ -28,6 +28,7 @@ export interface AuthToken {
 export interface TabAssignment {
   id: string;
   tab_id: string;
+  discord_user_id: string | null; // set for even splits; null for typed itemized labels
   invitee_label: string;
   share_amount: number; // cents
   item_ids: string[];

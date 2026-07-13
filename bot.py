@@ -18,6 +18,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DB_URI = os.getenv("SUPABASE_DB_URI")
+# Base URL of the deployed Next.js checkout-ui (no trailing slash)
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:3000").rstrip("/")
 
 # Global variables for the pool and graph app
 db_pool = None
@@ -247,6 +249,53 @@ async def process_receipt_vision(tab_id: str, image_url: str, channel_id: str):
         if channel:
             await channel.send(f"❌ Failed to parse the receipt. Please try taking a clearer photo. Error: `{str(e)}`")
 
+def create_auth_token(tab_id: str, discord_user_id: str) -> str:
+    """Create a single-use, 15-minute auth token for a checkout/split link."""
+    token = secrets.token_urlsafe(32)
+    supabase.table("auth_tokens").insert({
+        "token": token,
+        "discord_user_id": discord_user_id,
+        "tab_id": tab_id,
+        "expires_at": (datetime.now() + timedelta(minutes=15)).isoformat(),
+        "is_used": False,
+    }).execute()
+    return token
+
+
+def provision_user(member) -> str:
+    """Ensure a users row exists for this Discord member and return the canonical
+    stored username (the checkout page matches assignments on this value)."""
+    discord_user_id = str(member.id)
+    res = supabase.table("users").select("username").eq("discord_user_id", discord_user_id).execute()
+    if res.data:
+        return res.data[0]["username"]
+
+    username = member.name
+    supabase.table("users").insert({
+        "discord_user_id": discord_user_id,
+        "username": username,
+    }).execute()
+    return username
+
+
+async def resume_graph(tab_id: str, split_type: str):
+    """Un-freeze the LangGraph state machine once a split type is resolved."""
+    if not shared.app:
+        print(f"❌ Error: Graph engine not found when resolving {tab_id}")
+        return
+
+    config = {"configurable": {"thread_id": tab_id}}
+    # Because we are using an async Postgres checkpointer, we MUST use aupdate_state
+    await shared.app.aupdate_state(config, {"split_type": split_type})
+
+    # Invoke with 'None' to tell LangGraph to resume from the exact breakpoint
+    print(f"[{tab_id}] Un-freezing graph state...")
+    await shared.app.ainvoke(None, config)
+    graph_state = await shared.app.aget_state(config)
+    if not graph_state.next:
+        shared.active_channels.pop(tab_id, None)
+
+
 class SplitTypeView(discord.ui.View):
     def __init__(self, tab_id: str):
         # timeout=None ensures the buttons don't expire/break while waiting for a click
@@ -265,48 +314,102 @@ class SplitTypeView(discord.ui.View):
         channel = shared.active_channels.get(self.tab_id)
         # 1. Acknowledge the click immediately to update the Discord UI
         await interaction.response.edit_message(
-            content=f"✅ **{split_type.capitalize()}** split selected! Processing...", 
+            content=f"✅ **{split_type.capitalize()}** split selected! Processing...",
             view=None # Setting view=None removes the buttons so they can't be clicked twice
         )
-        
+
         # 2. Update your main database row
         supabase.table("tabs").update({
             "split_type": split_type,
             "status": "active"
         }).eq("id", self.tab_id).execute()
 
-        # Generate a cryptographically secure random string
-        token = secrets.token_urlsafe(32) 
-
-        # Save it to Supabase
-        supabase.table("auth_tokens").insert({
-            "token": token,
-            "discord_user_id": str(interaction.user.id),
-            "tab_id": self.tab_id,
-            "expires_at": (datetime.now()+ timedelta(minutes=15)).isoformat(),
-            "is_used": False
-        }).execute()
-
         # 3. Un-freeze the LangGraph State Machine
-        if shared.app:
-            config = {"configurable": {"thread_id": self.tab_id}}
+        await resume_graph(self.tab_id, split_type)
 
-            # Because we are using an async Postgres checkpointer, we MUST use aupdate_state
-            await shared.app.aupdate_state(config, {"split_type": split_type})
+        if not channel:
+            return
 
-            # Invoke with 'None' to tell LangGraph to resume from the exact breakpoint
-            print(f"[{self.tab_id}] Un-freezing graph state...")
-            await shared.app.ainvoke(None, config)
-            graph_state = await shared.app.aget_state(config)
-            if not graph_state.next:
-                shared.active_channels.pop(self.tab_id, None)
+        if split_type == "itemized":
+            # Itemized -> organizer opens the drag-and-drop tagger to assign
+            # items to people, which then generates per-invitee checkout links.
+            token = create_auth_token(self.tab_id, str(interaction.user.id))
+            url = f"{APP_BASE_URL}/split/{self.tab_id}?token={token}"
+            await channel.send(
+                f"🧾 **Itemize your split here:** {url}\n"
+                "*Tag each item to a person, then share the generated links. Valid for 15 minutes.*"
+            )
         else:
-            print(f"❌ Error: Graph engine not found when resolving {self.tab_id}")
-        
-        if channel:
-            # Send the UI link to Discord for checkout
-            url = f"https://yourapp.com/split/{self.tab_id}?token={token}"
-            await channel.send(f"💳 **Checkout Link:** {url}\n*This link is valid for 15 minutes.*")
+            # Even -> let the organizer pick everyone splitting the bill via the
+            # native Discord user picker. The dropdown resolves handles to member
+            # objects for us, so we get reliable IDs without parsing text.
+            await channel.send(
+                "👥 **Who's splitting this bill evenly?**\n"
+                "*Select everyone included (add yourself too if you're chipping in).*",
+                view=EvenSplitSelectView(self.tab_id),
+            )
+
+
+class EvenSplitSelectView(discord.ui.View):
+    """Native Discord user picker for choosing who is included in an even split."""
+
+    def __init__(self, tab_id: str):
+        super().__init__(timeout=900)  # 15 minutes, matching the checkout token lifetime
+        self.tab_id = tab_id
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="Select everyone splitting this bill…",
+        min_values=1,
+        max_values=25,
+    )
+    async def select_users(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        members = list(select.values)
+        await interaction.response.edit_message(
+            content=f"✅ Splitting evenly between **{len(members)}** people. Generating links…",
+            view=None,
+        )
+
+        # Look up the receipt total (stored in cents) so we can divide it up.
+        tab_res = supabase.table("tabs").select("total_amount").eq("id", self.tab_id).single().execute()
+        total_cents = tab_res.data["total_amount"] or 0
+
+        # Even division with remainder handling: the first `remainder` people
+        # absorb the leftover cents so the shares sum exactly to the total.
+        n = len(members)
+        base_share = total_cents // n
+        remainder = total_cents % n
+
+        # Rebuild assignments from scratch so re-selecting overwrites cleanly.
+        supabase.table("tab_assignments").delete().eq("tab_id", self.tab_id).execute()
+
+        assignment_rows = []
+        link_lines = []
+        for idx, member in enumerate(members):
+            share_cents = base_share + (1 if idx < remainder else 0)
+            # invitee_label must match the username the checkout page reads from
+            # the users table, so provision returns the canonical stored username.
+            username = provision_user(member)
+            token = create_auth_token(self.tab_id, str(member.id))
+
+            assignment_rows.append({
+                "tab_id": self.tab_id,
+                "discord_user_id": str(member.id),  # canonical key for checkout lookup
+                "invitee_label": username,          # kept for display / itemized parity
+                "share_amount": share_cents,
+                "item_ids": [],  # even split -> no per-item ownership
+            })
+            url = f"{APP_BASE_URL}/checkout/{self.tab_id}?token={token}&user={member.id}"
+            link_lines.append(f"• {member.mention} — **${share_cents / 100:.2f}**\n{url}")
+
+        supabase.table("tab_assignments").insert(assignment_rows).execute()
+        supabase.table("tabs").update({"status": "assigned"}).eq("id", self.tab_id).execute()
+
+        await interaction.followup.send(
+            "💳 **Even split — personal checkout links:**\n"
+            + "\n".join(link_lines)
+            + "\n\n*Each link is single-use and valid for 15 minutes.*"
+        )
 
 class ReceiptFixView(discord.ui.View):
     def __init__(self, tab_id: str):
