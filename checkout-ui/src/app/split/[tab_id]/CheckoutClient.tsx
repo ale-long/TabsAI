@@ -5,6 +5,7 @@ import { loadStripe } from "@stripe/stripe-js";
 import {
   Elements,
   PaymentElement,
+  ExpressCheckoutElement,
   useStripe,
   useElements,
 } from "@stripe/react-stripe-js";
@@ -30,9 +31,15 @@ function CheckoutForm({ amount }: { amount: number }) {
   const elements = useElements();
   const [status, setStatus] = useState<"idle" | "processing" | "success" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");
+  // Whether a wallet (Apple Pay / Google Pay / Link) is available in this
+  // browser. Undefined until the Express Checkout Element reports readiness;
+  // we hide the express button + divider entirely when nothing is available.
+  const [expressAvailable, setExpressAvailable] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Shared confirmation used by both the express wallet button and the card
+  // form. With a clientSecret already on <Elements>, confirmPayment collects
+  // the details from whichever element the customer used.
+  const confirmPayment = async () => {
     if (!stripe || !elements) return;
 
     setStatus("processing");
@@ -52,6 +59,11 @@ function CheckoutForm({ amount }: { amount: number }) {
     }
   };
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await confirmPayment();
+  };
+
   if (status === "success") {
     return (
       <div className="text-center py-8">
@@ -63,19 +75,45 @@ function CheckoutForm({ amount }: { amount: number }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <PaymentElement />
-      {status === "error" && (
-        <p className="text-sm text-danger">{errorMessage}</p>
+    <div className="space-y-4">
+      {/* Apple Pay / Google Pay / Link one-tap buttons. Renders only when a
+          wallet is available in the current browser (e.g. Apple Pay in Safari
+          on a device with a card in Wallet). */}
+      <ExpressCheckoutElement
+        onConfirm={confirmPayment}
+        onReady={({ availablePaymentMethods }) =>
+          setExpressAvailable(Boolean(availablePaymentMethods))
+        }
+      />
+
+      {expressAvailable && (
+        <div className="flex items-center gap-3">
+          <div className="h-px flex-1 bg-border" />
+          <span className="text-xs uppercase tracking-wide text-muted">
+            or pay with card
+          </span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
       )}
-      <button
-        type="submit"
-        disabled={!stripe || status === "processing"}
-        className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-light disabled:opacity-50"
-      >
-        {status === "processing" ? "Processing..." : `Pay ${formatCents(amount)}`}
-      </button>
-    </form>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Wallets are handled by the Express Checkout Element above, so hide
+            them here to avoid showing Apple Pay / Google Pay twice. */}
+        <PaymentElement
+          options={{ wallets: { applePay: "never", googlePay: "never" } }}
+        />
+        {status === "error" && (
+          <p className="text-sm text-danger">{errorMessage}</p>
+        )}
+        <button
+          type="submit"
+          disabled={!stripe || status === "processing"}
+          className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-white transition-colors hover:bg-accent-light disabled:opacity-50"
+        >
+          {status === "processing" ? "Processing..." : `Pay ${formatCents(amount)}`}
+        </button>
+      </form>
+    </div>
   );
 }
 

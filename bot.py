@@ -3,7 +3,7 @@ import json
 import asyncio
 import discord
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from groq import AsyncGroq
@@ -34,7 +34,6 @@ groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
 # An prioritized list of vision models we know our system prompt supports
 PREFERRED_VISION_MODELS = [
-   "meta-llama/llama-4-scout-17b-16e-instruct",
    "qwen/qwen3.6-27b"
 ]
 
@@ -256,7 +255,10 @@ def create_auth_token(tab_id: str, discord_user_id: str) -> str:
         "token": token,
         "discord_user_id": discord_user_id,
         "tab_id": tab_id,
-        "expires_at": (datetime.now() + timedelta(minutes=15)).isoformat(),
+        # Use timezone-aware UTC so the ISO string carries a +00:00 offset.
+        # A naive datetime.now() would be stored as local wall-clock time and
+        # read back as UTC, expiring the token by the local UTC offset instantly.
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(),
         "is_used": False,
     }).execute()
     return token
@@ -398,6 +400,7 @@ class EvenSplitSelectView(discord.ui.View):
                 "invitee_label": username,          # kept for display / itemized parity
                 "share_amount": share_cents,
                 "item_ids": [],  # even split -> no per-item ownership
+                "paid": False,
             })
             url = f"{APP_BASE_URL}/checkout/{self.tab_id}?token={token}&user={member.id}"
             link_lines.append(f"• {member.mention} — **${share_cents / 100:.2f}**\n{url}")
@@ -458,7 +461,7 @@ class ReceiptFixView(discord.ui.View):
         try:
             # We wrap this in a to_thread if you are using the sync Supabase client, 
             # or just call it directly if you are managing it synchronously here
-            supabase.table("tabs").update({"status": "cancelled"}).eq("id", self.tab_id).execute()
+            supabase.table("tabs").update({"status": "canceled"}).eq("id", self.tab_id).execute()
             print(f"[{self.tab_id}] Tab cancelled by user.")
         except Exception as e:
             print(f"[{self.tab_id}] Failed to cancel tab in database: {e}")

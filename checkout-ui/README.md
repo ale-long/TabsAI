@@ -27,10 +27,13 @@ A lightweight, mobile-first Next.js application for splitting receipt tabs and c
    SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
    STRIPE_SECRET_KEY=sk_test_...
+   STRIPE_WEBHOOK_SECRET=whsec_...
    ```
 
    - `SUPABASE_SERVICE_ROLE_KEY` is used server-side only for token validation and data fetching.
-   - Stripe publishable key is exposed to the browser for Elements. The secret key is used only in the API route.
+   - Stripe publishable key is exposed to the browser for Elements. The secret key is used only in the API routes.
+   - `STRIPE_WEBHOOK_SECRET` is the signing secret for the `/api/stripe-webhook` endpoint (see [Webhook](#post-apistripe-webhook)). Get it from Dashboard → Developers → Webhooks, or from `stripe listen` when testing locally.
+   - To accept Apple Pay, additional Stripe Dashboard + domain-registration steps are required — see [Wallet Payments](#wallet-payments-apple-pay--google-pay--link).
 
 3. **Run the development server**
 
@@ -95,8 +98,24 @@ The Confirm button is disabled until every item has at least one person assigned
 **Route:** `/split/{tab_id}?token={token}&invitee={name}`
 
 - Shows a summary of all receipt items and the individual's calculated share amount (from `tab_assignments`).
-- Renders a Stripe Payment Element with support for cards, Apple Pay, and Google Pay.
-- On successful payment, redirects to a confirmation page.
+- Renders a Stripe **Express Checkout Element** (one-tap Apple Pay / Google Pay / Link buttons) above a **Payment Element** for card entry. See [Wallet Payments](#wallet-payments-apple-pay--google-pay--link).
+- On successful payment, redirects to a confirmation page. Server-side, Stripe's `payment_intent.succeeded` webhook marks that invitee's `tab_assignments` row `paid`; once every invitee on the tab has paid, the tab's `status` flips to `closed`. See [Webhook](#post-apistripe-webhook).
+
+---
+
+### Wallet Payments (Apple Pay / Google Pay / Link)
+
+The checkout (`CheckoutClient.tsx`) renders Stripe's [Express Checkout Element](https://docs.stripe.com/elements/express-checkout-element) above the card form. It shows one-tap **Apple Pay**, **Google Pay**, and **Link** buttons and only appears when a wallet is actually available in the visitor's browser — otherwise the button and the "or pay with card" divider are hidden and the standard card form is shown alone. Wallets are suppressed inside the `PaymentElement` (`wallets: { applePay: "never", googlePay: "never" }`) so they don't appear twice.
+
+No server changes are needed: `/api/create-payment-intent` already creates the PaymentIntent with `automatic_payment_methods: { enabled: true }`, which is what allows wallet payment methods.
+
+**The code alone is not enough — Apple Pay has hard platform requirements:**
+
+1. **Enable Apple Pay** in the Stripe Dashboard → Settings → Payment methods (on by default in most accounts).
+2. **Register your domain** for Apple Pay: Dashboard → Settings → Payments → *Payment method domains* → add your production domain. Stripe then serves the required `/.well-known/apple-developer-merchantid-domain-association` file automatically — there is no file to commit to this repo. (Programmatic alternative: `stripe.paymentMethodDomains.create({ domain_name })`.)
+3. **Serve over HTTPS and test in Safari.** Apple Pay only renders in **Safari** on macOS/iOS, on an **HTTPS** origin, on a device with a card in Wallet. It will **not** show on `http://localhost`, and never in desktop Chrome or Firefox.
+
+**Google Pay** shows in Chrome without domain registration, so it's the quickest way to verify the Express Checkout Element locally (over HTTPS). **Link** appears for returning Stripe customers.
 
 ---
 
@@ -143,6 +162,16 @@ Request body:
 
 Returns `{ "success": true }` on success. Also updates the tab status to `assigned`.
 
+**`POST /api/stripe-webhook`**
+
+Stripe webhook endpoint. Verifies the request signature against `STRIPE_WEBHOOK_SECRET`, then on `payment_intent.succeeded`:
+
+1. Reads `tab_id` and `invitee` from the PaymentIntent's `metadata` (set in `create-payment-intent`).
+2. Marks the matching `tab_assignments` row `paid: true` (with `paid_at`).
+3. If every assignment row for that `tab_id` is now paid, updates `tabs.status` to `closed`.
+
+Register this route in the Stripe Dashboard (or via `stripe listen --forward-to localhost:3000/api/stripe-webhook` locally) subscribed to `payment_intent.succeeded`.
+
 ## Database Schema
 
 The app expects these Supabase tables (created by the Discord bot):
@@ -150,10 +179,35 @@ The app expects these Supabase tables (created by the Discord bot):
 | Table | Key Columns |
 |---|---|
 | `auth_tokens` | `token`, `discord_user_id`, `tab_id`, `expires_at`, `is_used` |
-| `tabs` | `id`, `creator_id`, `total_amount` (cents), `split_type`, `status` |
+| `tabs` | `id`, `creator_id`, `total_amount` (cents), `split_type`, `status` (`tab_status` enum) |
 | `receipt_items` | `id`, `tab_id`, `item_name`, `unit_price` (cents), `quantity` |
 | `users` | `id`, `discord_user_id`, `username` |
-| `tab_assignments` | `id`, `tab_id`, `discord_user_id`, `invitee_label`, `share_amount` (cents), `item_ids` (text[]) |
+| `tab_assignments` | `id`, `tab_id`, `discord_user_id`, `invitee_label`, `share_amount` (cents), `item_ids` (text[]), `paid` (bool), `paid_at` (timestamptz, nullable) |
+
+### Tab lifecycle (`tab_status` enum)
+
+A tab's `status` column is a Postgres enum (`tab_status`) that tracks where the tab is in its lifecycle:
+
+| Status | Set by | Meaning |
+|---|---|---|
+| `pending_context` | Bot, on tab creation | Receipt/context not yet processed; the tab is paused waiting for details. |
+| `active` | Bot, when a split type is chosen | The split is being assembled. In the itemized flow the tab stays here while the organizer is still tagging items to people in this UI. |
+| `assigned` | Bot (even split) / `confirm-split` (itemized) | The split is **finalized**: per-person shares are written to `tab_assignments` and checkout links are live. This is the "awaiting payment" phase. |
+| `closed` | `stripe-webhook`, once every `tab_assignments` row for the tab is `paid` | Terminal: the tab is fully settled. |
+| `canceled` | Bot, on cancel | Terminal: the tab was abandoned and is excluded from active queries. |
+
+The `active → assigned` transition is the boundary between "split still being decided" and "split locked, now collecting money." Add this value to the enum before deploying if provisioning a fresh database:
+
+```sql
+ALTER TYPE tab_status ADD VALUE IF NOT EXISTS 'assigned';
+```
+
+**Per-invitee payment tracking:** `tab_assignments` rows start with `paid = false` (written by both the bot's even-split insert and `confirm-split`'s itemized insert). The `stripe-webhook` route flips a row to `paid = true` when that invitee's PaymentIntent succeeds, then closes the tab once every row is paid. Add these columns before deploying if provisioning a fresh database:
+
+```sql
+ALTER TABLE tab_assignments ADD COLUMN IF NOT EXISTS paid boolean NOT NULL DEFAULT false;
+ALTER TABLE tab_assignments ADD COLUMN IF NOT EXISTS paid_at timestamptz;
+```
 
 ## Project Structure
 
@@ -169,8 +223,10 @@ src/
     ├── api/
     │   ├── create-payment-intent/
     │   │   └── route.ts       # Stripe PaymentIntent endpoint
-    │   └── confirm-split/
-    │       └── route.ts       # Persist item-to-user assignments
+    │   ├── confirm-split/
+    │   │   └── route.ts       # Persist item-to-user assignments
+    │   └── stripe-webhook/
+    │       └── route.ts       # payment_intent.succeeded -> mark paid, close tab
     ├── checkout/
     │   └── [tab_id]/
     │       └── page.tsx       # Even-split checkout (Scenario A)

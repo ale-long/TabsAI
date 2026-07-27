@@ -32,4 +32,6 @@ export interface TabAssignment {
   invitee_label: string;
   share_amount: number; // cents
   item_ids: string[];
+  paid: boolean;
+  paid_at: string | null;
 }

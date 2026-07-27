@@ -52,6 +52,7 @@ export async function POST(request: Request) {
       invitee_label: a.invitee_label,
       share_amount: a.share_amount,
       item_ids: a.item_ids,
+      paid: false,
     }));
 
     const { error: insertError } = await supabase
