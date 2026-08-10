@@ -1,0 +1,13 @@
+name = "tabs-ai-discord-bot"
+main = "src/bot.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Non-secret vars can go here; secrets should be set via `wrangler secret put`:
+#   wrangler secret put DISCORD_PUBLIC_KEY
+#   wrangler secret put DISCORD_BOT_TOKEN
+#   wrangler secret put DISCORD_APPLICATION_ID
+#   wrangler secret put SUPABASE_URL
+#   wrangler secret put SUPABASE_KEY
+#   wrangler secret put GROQ_API_KEY
+#   wrangler secret put APP_BASE_URL
