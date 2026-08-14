@@ -1,4 +1,5 @@
 .env
+.dev.vars
 venv/
 node_modules/
 dist/

@@ -70,7 +70,13 @@ Wrangler will print the worker URL (e.g. `https://tabs-ai-discord-bot.<your-subd
 npm run dev
 ```
 
-This starts a local dev server via `wrangler dev`. To expose it to Discord for testing, use a tunnel such as [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-local-tunnel/) or ngrok, and set the tunnel URL as the Interactions Endpoint.
+This starts a local dev server via `wrangler dev`. To expose it to Discord for testing, open a second terminal and start a Cloudflare Tunnel:
+
+```bash
+npx cloudflared tunnel --url http://localhost:8787
+```
+
+Cloudflared will print a public URL (e.g. `https://<random>.trycloudflare.com`). Copy that URL and set it as the **Interactions Endpoint URL** in the [Discord Developer Portal](https://discord.com/developers/applications) → your app → General Information. The tunnel stays active as long as the command is running.
 
 ## Required Bot Permissions
 

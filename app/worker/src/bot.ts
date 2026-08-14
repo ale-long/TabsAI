@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { verifyKey } from "discord-interactions";
 import { IntentEngine } from "./intent-engine";
 
 // ---------------------------------------------------------------------------
@@ -40,41 +41,18 @@ const ButtonStyle = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4 } as const
 const PREFERRED_VISION_MODELS = ["qwen/qwen3.6-27b"];
 
 // ---------------------------------------------------------------------------
-// Ed25519 signature verification (replaces discord.py's built-in check)
+// Ed25519 signature verification via discord-interactions
 // ---------------------------------------------------------------------------
-
-function hexToUint8Array(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
-}
 
 async function verifySignature(
   request: Request,
   publicKey: string,
 ): Promise<{ valid: boolean; body: string }> {
-  const signature = request.headers.get("X-Signature-Ed25519");
-  const timestamp = request.headers.get("X-Signature-Timestamp");
+  const signature = request.headers.get("X-Signature-Ed25519") ?? "";
+  const timestamp = request.headers.get("X-Signature-Timestamp") ?? "";
   const body = await request.text();
 
-  if (!signature || !timestamp) return { valid: false, body };
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    hexToUint8Array(publicKey),
-    { name: "Ed25519", namedCurve: "Ed25519" },
-    false,
-    ["verify"],
-  );
-
-  const valid = await crypto.subtle.verify(
-    "Ed25519",
-    key,
-    hexToUint8Array(signature),
-    new TextEncoder().encode(timestamp + body),
-  );
+  const valid = await verifyKey(body, signature, timestamp, publicKey);
 
   return { valid, body };
 }
@@ -195,13 +173,17 @@ async function provisionUser(
     return { userId: data[0].id, username: data[0].username };
   }
 
-  const { data: newUser } = await supabase
+  const { data: newUser, error } = await supabase
     .from("users")
     .insert({ discord_user_id: discordUserId, username })
     .select("id, username")
     .single();
 
-  return { userId: newUser!.id, username: newUser!.username };
+  if (error || !newUser) {
+    throw new Error(`Failed to provision user ${discordUserId}: ${error?.message ?? "no data returned"}`);
+  }
+
+  return { userId: newUser.id, username: newUser.username };
 }
 
 // ---------------------------------------------------------------------------

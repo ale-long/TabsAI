@@ -7,7 +7,8 @@
     "register": "npx tsx src/register-commands.ts"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.0"
+    "@supabase/supabase-js": "^2.49.0",
+    "discord-interactions": "^4.4.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241127.0",
