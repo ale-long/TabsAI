@@ -17,6 +17,13 @@ export interface Tab {
   status: string;
 }
 
+export interface DiscordMember {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
 export interface AuthToken {
   token: string;
   discord_user_id: string;

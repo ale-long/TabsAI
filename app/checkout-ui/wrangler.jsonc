@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "checkout-ui",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": ".open-next/worker.js",
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "NEXT_PUBLIC_SUPABASE_URL": "https://krbondwjmqdxumpndflj.supabase.co",
+    "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY": "pk_test_51TscVpHYjiv53BhqdAsbDHp4n8MOTVMfCPbpshdqx1JRX7oZpkdjExBxq7ZTEHGK1gPi0oLT42FO6BXXPe7g9ADD00dnDCdNrh"
+  }
+}

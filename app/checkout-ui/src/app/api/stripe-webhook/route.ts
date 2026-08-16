@@ -1,10 +1,12 @@
 import Stripe from "stripe";
 import { createSupabaseServerClient } from "@/lib/supabase";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
-
 export async function POST(request: Request) {
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+    httpClient: Stripe.createFetchHttpClient(),
+  });
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+
   const body = await request.text();
   const signature = request.headers.get("stripe-signature");
 

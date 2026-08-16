@@ -85,13 +85,17 @@ async function editOriginalResponse(
   interactionToken: string,
   content: string,
   components?: unknown[],
+  embeds?: unknown[],
 ): Promise<void> {
+  const body: Record<string, unknown> = { content, components: components ?? [] };
+  if (embeds) body.embeds = embeds;
+
   await fetch(
     `${DISCORD_API}/webhooks/${appId}/${interactionToken}/messages/@original`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, components: components ?? [] }),
+      body: JSON.stringify(body),
     },
   );
 }
@@ -284,13 +288,15 @@ Do not include markdown blocks, explanations, or any text outside the JSON objec
       .update({ total_amount: totalCents })
       .eq("id", tabId);
 
-    // Notify via interaction followup
+    // Notify via interaction followup with receipt image
     const itemCount = (receiptData.items ?? []).length;
     const formattedTotal = `$${(receiptData.total ?? 0).toFixed(2)}`;
     await editOriginalResponse(
       env.DISCORD_APPLICATION_ID,
       interactionToken,
       `✅ Extracted **${itemCount} items** for a total of **${formattedTotal}**! (Tab ID: \`${tabId}\`)\n*Next up: Resolving split parameters...*`,
+      undefined,
+      [{ image: { url: imageUrl }, color: 0x6366f1 }],
     );
 
     // Run the intent engine (replaces shared.app.ainvoke)

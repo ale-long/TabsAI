@@ -1,7 +1,32 @@
 import { createSupabaseServerClient } from "@/lib/supabase";
-import type { Tab, ReceiptItem } from "@/lib/types";
+import type { Tab, ReceiptItem, DiscordMember } from "@/lib/types";
 import SplitTaggerClient from "./SplitTaggerClient";
 import CheckoutClient from "./CheckoutClient";
+
+const DISCORD_API = "https://discord.com/api/v10";
+
+async function fetchGuildMembers(guildId: string): Promise<DiscordMember[]> {
+  const botToken = process.env.DISCORD_BOT_TOKEN;
+  if (!botToken) return [];
+
+  const res = await fetch(`${DISCORD_API}/guilds/${guildId}/members?limit=100`, {
+    headers: { Authorization: `Bot ${botToken}` },
+  });
+
+  if (!res.ok) return [];
+
+  const members: any[] = await res.json();
+  return members
+    .filter((m) => !m.user.bot)
+    .map((m) => ({
+      id: m.user.id,
+      username: m.user.username,
+      display_name: m.nick || m.user.global_name || m.user.username,
+      avatar_url: m.user.avatar
+        ? `https://cdn.discordapp.com/avatars/${m.user.id}/${m.user.avatar}.png?size=64`
+        : null,
+    }));
+}
 
 interface PageProps {
   params: Promise<{ tab_id: string }>;
@@ -35,19 +60,6 @@ export default async function SplitPage({ params, searchParams }: PageProps) {
     return <ErrorScreen message="This link has expired. Please request a new checkout link from Discord." />;
   }
 
-  // Check if already used (for invitee checkout tokens)
-  if (authToken.is_used && invitee) {
-    return <ErrorScreen message="This checkout link has already been used." />;
-  }
-
-  // Mark token as used for single-use invitee flows
-  if (invitee) {
-    await supabase
-      .from("auth_tokens")
-      .update({ is_used: true })
-      .eq("token", token);
-  }
-
   // Fetch the tab data
   const { data: tab, error: tabError } = await supabase
     .from("tabs")
@@ -71,6 +83,11 @@ export default async function SplitPage({ params, searchParams }: PageProps) {
 
   const typedTab = tab as Tab;
   const typedItems = items as ReceiptItem[];
+
+  // Fetch guild members for the organizer's split tagger view
+  const guildMembers = typedTab.discord_guild_id
+    ? await fetchGuildMembers(typedTab.discord_guild_id)
+    : [];
 
   // If invitee param is present, show checkout view
   if (invitee && typeof invitee === "string") {
@@ -100,6 +117,7 @@ export default async function SplitPage({ params, searchParams }: PageProps) {
       tab={typedTab}
       items={typedItems}
       token={token}
+      guildMembers={guildMembers}
     />
   );
 }

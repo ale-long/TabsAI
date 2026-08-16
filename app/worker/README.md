@@ -18,6 +18,12 @@ npm install
 
 ## Configure Secrets
 
+### Environment Variables
+
+`APP_BASE_URL` is set as a var in `wrangler.toml` under `[vars]` and points to the deployed checkout UI (e.g. `https://checkout-ui.tabsai.workers.dev`). Update it there if the checkout UI URL changes.
+
+### Secrets
+
 All sensitive values are stored as Cloudflare Worker secrets. Run each command and paste the value when prompted:
 
 ```bash
@@ -27,7 +33,6 @@ wrangler secret put DISCORD_APPLICATION_ID
 wrangler secret put SUPABASE_URL
 wrangler secret put SUPABASE_KEY
 wrangler secret put GROQ_API_KEY
-wrangler secret put APP_BASE_URL
 ```
 
 | Secret | Where to find it |
@@ -38,7 +43,6 @@ wrangler secret put APP_BASE_URL
 | `SUPABASE_URL` | Supabase project → Settings → API → Project URL |
 | `SUPABASE_KEY` | Supabase project → Settings → API → `service_role` key |
 | `GROQ_API_KEY` | [Groq Console](https://console.groq.com/) → API Keys |
-| `APP_BASE_URL` | The deployed URL of the Next.js checkout UI (no trailing slash) |
 
 ## Register the Slash Command
 
@@ -84,3 +88,15 @@ When generating an OAuth2 invite link, include these scopes and permissions:
 
 - **Scopes:** `bot`, `applications.commands`
 - **Bot Permissions:** `Send Messages`, `Attach Files`, `Use Slash Commands`
+
+### Privileged Intents
+
+The **Server Members Intent** must be enabled in the Discord Developer Portal (Bot → Privileged Gateway Intents). This is required for the checkout UI to fetch guild members for the itemized split drag-and-drop interface.
+
+## How It Works
+
+1. **`/receipt` command** — User uploads a receipt image. The bot stores it in Supabase Storage, sends it to Groq Vision for OCR, and extracts line items, tax, tip, and total. The extraction result is posted to Discord with the receipt image embedded.
+2. **Split type selection** — The bot presents Even / Itemized buttons. 
+   - **Even:** Bot shows a user select menu, divides the total, and sends each person a personal checkout link with `<@user>` pings.
+   - **Itemized:** Bot generates a link to the checkout UI's split tagger page where the organizer assigns items to guild members via drag-and-drop. On confirm, the checkout UI sends Discord messages with per-person checkout links and `<@user>` pings.
+3. **Payment** — Each person opens their checkout link, pays via Stripe (card, Apple Pay, or Google Pay), and the Stripe webhook marks their assignment as paid. When all assignments are paid, the tab is closed.

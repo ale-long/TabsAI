@@ -153,6 +153,21 @@ export default function CheckoutClient({ tab, items, inviteeLabel, shareAmount }
             {formatCents(shareAmount)}
           </span>
         </p>
+
+        {tab.receipt_storage_url && (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-sm font-medium text-accent hover:text-accent-light">
+              View Receipt
+            </summary>
+            <div className="mt-2 overflow-hidden rounded-xl border border-border">
+              <img
+                src={tab.receipt_storage_url}
+                alt="Receipt"
+                className="w-full"
+              />
+            </div>
+          </details>
+        )}
       </div>
 
       {/* Receipt Summary */}
