@@ -130,7 +130,22 @@ export async function POST(request: Request) {
         const message =
           "💳 **Itemized split confirmed — personal checkout links:**\n" +
           linkLines.join("\n") +
-          "\n\n*Each link is single-use and valid for 15 minutes.*";
+          "\n\n*Each link is valid for 15 minutes. Use the buttons below to manually mark someone as paid if they used an alternative payment method.*";
+
+        const markPaidButtons = assignments.map((a) => ({
+          type: 2, // BUTTON
+          style: 2, // SECONDARY
+          label: `Mark ${a.invitee_label} Paid`,
+          custom_id: `btn_mark_paid:${tab_id}:${a.discord_user_id}`,
+        }));
+
+        const buttonRows = [];
+        for (let i = 0; i < markPaidButtons.length; i += 5) {
+          buttonRows.push({
+            type: 1, // ACTION_ROW
+            components: markPaidButtons.slice(i, i + 5),
+          });
+        }
 
         await fetch(`${DISCORD_API}/channels/${tab.discord_channel_id}/messages`, {
           method: "POST",
@@ -138,7 +153,7 @@ export async function POST(request: Request) {
             Authorization: `Bot ${botToken}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ content: message }),
+          body: JSON.stringify({ content: message, components: buttonRows }),
         });
       }
     }

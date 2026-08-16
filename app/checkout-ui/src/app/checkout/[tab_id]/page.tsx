@@ -44,16 +44,6 @@ export default async function CheckoutPage({
     );
   }
 
-  if (authToken.is_used) {
-    return <ErrorScreen message="This checkout link has already been used." />;
-  }
-
-  // Mark token as used
-  await supabase
-    .from("auth_tokens")
-    .update({ is_used: true })
-    .eq("token", token);
-
   // Fetch tab data
   const { data: tab, error: tabError } = await supabase
     .from("tabs")

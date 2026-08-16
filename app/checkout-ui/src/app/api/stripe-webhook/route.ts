@@ -1,6 +1,23 @@
 import Stripe from "stripe";
 import { createSupabaseServerClient } from "@/lib/supabase";
 
+const DISCORD_API = "https://discord.com/api/v10";
+
+async function sendDiscordMessage(
+  botToken: string,
+  channelId: string,
+  content: string,
+): Promise<void> {
+  await fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${botToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ content }),
+  });
+}
+
 export async function POST(request: Request) {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
     httpClient: Stripe.createFetchHttpClient(),
@@ -48,7 +65,7 @@ export async function POST(request: Request) {
 
       const { data: assignments, error: fetchError } = await supabase
         .from("tab_assignments")
-        .select("paid")
+        .select("paid, invitee_label, discord_user_id")
         .eq("tab_id", tab_id);
 
       if (fetchError) {
@@ -65,6 +82,40 @@ export async function POST(request: Request) {
           .eq("id", tab_id);
         if (closeError) {
           console.error("[stripe-webhook] failed to close tab:", closeError);
+        }
+      }
+
+      // Send Discord notification
+      const botToken = process.env.DISCORD_BOT_TOKEN;
+      if (botToken) {
+        const { data: tab } = await supabase
+          .from("tabs")
+          .select("discord_channel_id")
+          .eq("id", tab_id)
+          .single();
+
+        if (tab?.discord_channel_id) {
+          const amount = `$${(paymentIntent.amount / 100).toFixed(2)}`;
+
+          // Find the discord user ID for this invitee
+          const assignment = assignments?.find((a) => a.invitee_label === invitee);
+          const mention = assignment?.discord_user_id
+            ? `<@${assignment.discord_user_id}>`
+            : `**${invitee}**`;
+
+          await sendDiscordMessage(
+            botToken,
+            tab.discord_channel_id,
+            `✅ ${mention} has paid their share of **${amount}**!`,
+          );
+
+          if (allPaid) {
+            await sendDiscordMessage(
+              botToken,
+              tab.discord_channel_id,
+              "🎉 **All shares have been paid! This tab is now closed.**",
+            );
+          }
         }
       }
     } else {

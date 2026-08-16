@@ -532,6 +532,91 @@ async function handleButtonClick(
       return response;
     }
 
+    // --- Mark as Paid (manual alternative payment) ---
+    case "btn_mark_paid": {
+      // customId format: btn_mark_paid:tabId:discordUserId
+      const parts = tabId.split(":");
+      const realTabId = parts[0];
+      const targetUserId = parts[1];
+
+      const response = jsonResponse({
+        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+        data: { flags: 64 },
+      });
+
+      ctx.waitUntil(
+        (async () => {
+          const { data: assignment } = await supabase
+            .from("tab_assignments")
+            .select("invitee_label, share_amount, paid")
+            .eq("tab_id", realTabId)
+            .eq("discord_user_id", targetUserId)
+            .single();
+
+          if (!assignment) {
+            await editOriginalResponse(
+              env.DISCORD_APPLICATION_ID,
+              interaction.token,
+              "❌ Assignment not found.",
+            );
+            return;
+          }
+
+          if (assignment.paid) {
+            await editOriginalResponse(
+              env.DISCORD_APPLICATION_ID,
+              interaction.token,
+              `✅ **${assignment.invitee_label}** has already been marked as paid.`,
+            );
+            return;
+          }
+
+          await supabase
+            .from("tab_assignments")
+            .update({ paid: true, paid_at: new Date().toISOString() })
+            .eq("tab_id", realTabId)
+            .eq("discord_user_id", targetUserId);
+
+          const amount = `$${(assignment.share_amount / 100).toFixed(2)}`;
+          await sendChannelMessage(
+            env.DISCORD_BOT_TOKEN,
+            channelId,
+            `✅ <@${targetUserId}> has been manually marked as paid (**${amount}**).`,
+          );
+
+          // Check if all assignments are now paid
+          const { data: allAssignments } = await supabase
+            .from("tab_assignments")
+            .select("paid")
+            .eq("tab_id", realTabId);
+
+          const allPaid = allAssignments &&
+            allAssignments.length > 0 &&
+            allAssignments.every((a) => a.paid);
+
+          if (allPaid) {
+            await supabase
+              .from("tabs")
+              .update({ status: "closed" })
+              .eq("id", realTabId);
+            await sendChannelMessage(
+              env.DISCORD_BOT_TOKEN,
+              channelId,
+              "🎉 **All shares have been paid! This tab is now closed.**",
+            );
+          }
+
+          await editOriginalResponse(
+            env.DISCORD_APPLICATION_ID,
+            interaction.token,
+            `✅ Marked **${assignment.invitee_label}** as paid.`,
+          );
+        })(),
+      );
+
+      return response;
+    }
+
     // --- ReceiptFixView.cancel_button ---
     case "btn_cancel_tab": {
       ctx.waitUntil(
@@ -645,12 +730,29 @@ async function handleUserSelect(
         .update({ status: "assigned" })
         .eq("id", tabId);
 
+      const markPaidButtons = selectedUserIds.map((userId, idx) => ({
+        type: ComponentType.BUTTON,
+        style: ButtonStyle.SECONDARY,
+        label: `Mark ${resolvedUsers[userId]?.username ?? `User ${idx + 1}`} Paid`,
+        custom_id: `btn_mark_paid:${tabId}:${userId}`,
+      }));
+
+      // Discord allows max 5 buttons per action row
+      const buttonRows = [];
+      for (let i = 0; i < markPaidButtons.length; i += 5) {
+        buttonRows.push({
+          type: ComponentType.ACTION_ROW,
+          components: markPaidButtons.slice(i, i + 5),
+        });
+      }
+
       await sendChannelMessage(
         env.DISCORD_BOT_TOKEN,
         channelId,
         "💳 **Even split — personal checkout links:**\n" +
           linkLines.join("\n") +
-          "\n\n*Each link is single-use and valid for 15 minutes.*",
+          "\n\n*Each link is valid for 15 minutes. Use the buttons below to manually mark someone as paid if they used an alternative payment method.*",
+        buttonRows,
       );
     })(),
   );
