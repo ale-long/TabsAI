@@ -164,26 +164,20 @@ async function provisionUser(
   discordUserId: string,
   username: string,
 ): Promise<{ userId: string; username: string }> {
-  const { data } = await supabase
+  const { data: user, error } = await supabase
     .from("users")
-    .select("id, username")
-    .eq("discord_user_id", discordUserId);
-
-  if (data && data.length > 0) {
-    return { userId: data[0].id, username: data[0].username };
-  }
-
-  const { data: newUser, error } = await supabase
-    .from("users")
-    .insert({ discord_user_id: discordUserId, username })
+    .upsert(
+      { discord_user_id: discordUserId, username },
+      { onConflict: "discord_user_id" },
+    )
     .select("id, username")
     .single();
 
-  if (error || !newUser) {
+  if (error || !user) {
     throw new Error(`Failed to provision user ${discordUserId}: ${error?.message ?? "no data returned"}`);
   }
 
-  return { userId: newUser.id, username: newUser.username };
+  return { userId: user.id, username: user.username };
 }
 
 // ---------------------------------------------------------------------------
