@@ -11,8 +11,8 @@ Instead of using a standard `fetch` HTTP handler, this module hooks into Cloudfl
    - **Soft** (1st nudge) — warm, friendly, like a friend texting a friend.
    - **Casual** (2nd–3rd) — straightforward, mentions the amount and that others are waiting.
    - **Direct** (4th+) — firm and final, states the overdue amount clearly.
-3. Drafts a constrained SMS-style reminder (under 280 chars, no emojis, no links) via Groq (`llama-3.3-70b-versatile`).
-4. Dispatches the message to the tab's Discord channel via the REST API.
+3. Drafts a constrained SMS-style reminder (under 280 chars, no emojis, no links) via Groq (`qwen/qwen3.6-27b`).
+4. Dispatches the message to the tab's Discord channel via the REST API, pinging the user's Discord handle.
 5. Updates the audit trail — sets `last_nudged_at` and increments `nudge_count` on the assignment row.
 
 ## Database Migration Required
@@ -51,4 +51,10 @@ Test the cron handler locally with:
 npm run dev
 # Then trigger the scheduled event:
 curl "http://localhost:8787/__scheduled?cron=0+*/6+*+*+*"
+```
+
+To force a nudge that bypasses cooldown and paid filters (useful for testing):
+
+```sh
+curl http://localhost:8787/force
 ```
