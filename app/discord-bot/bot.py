@@ -34,7 +34,7 @@ groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
 # An prioritized list of vision models we know our system prompt supports
 PREFERRED_VISION_MODELS = [
-   "qwen/qwen3.6-27b"
+   "qwen/qwen3.8-27b"
 ]
 
 # 3. Configure Discord Client Intents

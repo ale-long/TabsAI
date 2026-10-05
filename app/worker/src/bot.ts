@@ -38,7 +38,7 @@ const InteractionResponseType = {
 const ComponentType = { ACTION_ROW: 1, BUTTON: 2, USER_SELECT: 5 } as const;
 const ButtonStyle = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4 } as const;
 
-const PREFERRED_VISION_MODELS = ["qwen/qwen3.6-27b"];
+const PREFERRED_VISION_MODELS = ["qwen/qwen3.8-27b"];
 
 // ---------------------------------------------------------------------------
 // Ed25519 signature verification via discord-interactions
