@@ -8,7 +8,7 @@ interface Env {
 }
 
 const DISCORD_API = "https://discord.com/api/v10";
-const COOLDOWN_HOURS = 48;
+const COOLDOWN_HOURS = 5 * 24;
 
 const TONE_ESCALATION = [
   {
